@@ -1,0 +1,6 @@
+{
+  "name": "منصة كودر سبيس (Coder Space) | تعلّم البرمجة مجاناً",
+  "description": "منصة كودر سبيس (Coder Space) العربية التفاعلية المجانية لتعليم وتطبيق لغات الويب: HTML و CSS و JavaScript بدون أي اشتراكات أو تكاليف، مع محرر كود واختبارات ومشاريع وشهادات معتمدة.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
