@@ -1,0 +1,101 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-tajawal: 'Tajawal', sans-serif;
+    --font-cairo: 'Cairo', sans-serif;
+    --font-code: 'Fira Code', 'Courier New', monospace;
+  }
+
+  body {
+    font-family: var(--font-tajawal);
+    background-color: #0F0E17;
+    color: #FFFFFE;
+    direction: rtl;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-cairo);
+  }
+
+  code, pre, kbd {
+    font-family: var(--font-code);
+  }
+
+  /* Custom Scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #141221;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #2D2A4A;
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #6C63FF;
+  }
+}
+
+/* Accessibility Modes */
+.high-contrast {
+  --tw-bg-opacity: 1 !important;
+  background-color: #000000 !important;
+  color: #FFFFFF !important;
+}
+
+.high-contrast .border-border, .high-contrast [class*="border-"] {
+  border-color: #FFFF00 !important;
+}
+
+.high-contrast a, .high-contrast button {
+  text-decoration: underline !important;
+}
+
+.reduced-motion * {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+}
+
+.dyslexic-font {
+  font-family: 'Comic Sans MS', 'Tajawal', sans-serif !important;
+  letter-spacing: 0.05em !important;
+  word-spacing: 0.1em !important;
+}
+
+/* Print Certificate Specific Styling */
+@media print {
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  header, footer, aside, nav, button, .print\\:hidden, #root > div > header, #root > div > footer, #root > div > div > aside {
+    display: none !important;
+  }
+
+  .print-certificate-container {
+    box-shadow: none !important;
+    border: 3px solid #d97706 !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+    page-break-inside: avoid !important;
+    margin: 1cm auto !important;
+    max-width: 100% !important;
+  }
+
+  .print-certificate-container * {
+    color: #000000 !important;
+    text-shadow: none !important;
+  }
+
+  .print-certificate-container .text-amber-300,
+  .print-certificate-container .text-amber-400 {
+    color: #b45309 !important;
+  }
+}
