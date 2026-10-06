@@ -100,28 +100,40 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [ttsSpeaking, setTtsSpeaking] = useState<boolean>(false);
   const [ttsSpeed, setTtsSpeed] = useState<number>(1);
 
-  // Load saved session on mount & Sync with Supabase
+  // Build app User from a Supabase Auth user
+  const toAppUser = (au: any): User => ({
+    id: au.id,
+    name: au.user_metadata?.name || au.email?.split('@')[0] || 'مستخدم',
+    username: au.user_metadata?.username || au.email?.split('@')[0] || 'user',
+    email: au.email || '',
+    age: Number(au.user_metadata?.age) || 0,
+    createdAt: Date.now(),
+    lastSeen: Date.now(),
+  });
+
+  // Load saved session on mount (Supabase Auth keeps the session)
   useEffect(() => {
     try {
-      const savedUserStr = safeStorage.getItem(STORAGE_KEYS.CURRENT_USER);
-      if (savedUserStr) {
-        const savedUser: User = JSON.parse(savedUserStr);
-        setUser(savedUser);
-        loadUserProgress(savedUser.username);
-      } else {
-        const guestProgress = safeStorage.getItem(STORAGE_KEYS.PROGRESS_PREFIX + 'guest');
-        if (guestProgress) {
-          setProgress(JSON.parse(guestProgress));
-        }
-      }
-
       const savedSettings = safeStorage.getItem(STORAGE_KEYS.SETTINGS);
       if (savedSettings) {
         setAccessibility(JSON.parse(savedSettings));
       }
     } catch (e) {
-      console.warn('Error loading initial local storage state', e);
+      console.warn('Error loading settings', e);
     }
+
+    supabase.auth.getSession().then(({ data }) => {
+      if (data.session?.user) {
+        const appUser = toAppUser(data.session.user);
+        setUser(appUser);
+        loadUserProgress(appUser.id!);
+      } else {
+        try {
+          const guestProgress = safeStorage.getItem(STORAGE_KEYS.PROGRESS_PREFIX + 'guest');
+          if (guestProgress) setProgress(JSON.parse(guestProgress));
+        } catch {}
+      }
+    });
   }, []);
 
   // Sync accessibility classes with document
@@ -149,15 +161,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     safeStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(accessibility));
   }, [accessibility]);
 
-  // Load user progress from Supabase with LocalStorage Fallback
-  const loadUserProgress = async (username: string) => {
+  // Load user progress from Supabase (own row only) with LocalStorage fallback
+  const loadUserProgress = async (userId: string) => {
     let loadedProgress: UserProgress = defaultProgress;
 
     try {
       const { data, error } = await supabase
         .from('user_progress')
         .select('*')
-        .eq('username', username)
+        .eq('user_id', userId)
         .maybeSingle();
 
       if (data && !error) {
@@ -170,11 +182,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           lastActiveDate: new Date().toISOString().split('T')[0],
         };
       } else {
-        const raw = safeStorage.getItem(STORAGE_KEYS.PROGRESS_PREFIX + username);
+        const raw = safeStorage.getItem(STORAGE_KEYS.PROGRESS_PREFIX + userId);
         if (raw) loadedProgress = JSON.parse(raw);
       }
     } catch (err) {
-      const raw = safeStorage.getItem(STORAGE_KEYS.PROGRESS_PREFIX + username);
+      const raw = safeStorage.getItem(STORAGE_KEYS.PROGRESS_PREFIX + userId);
       if (raw) loadedProgress = JSON.parse(raw);
     }
 
@@ -192,42 +204,42 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
 
     setProgress(loadedProgress);
-    safeStorage.setItem(STORAGE_KEYS.PROGRESS_PREFIX + username, JSON.stringify(loadedProgress));
+    safeStorage.setItem(STORAGE_KEYS.PROGRESS_PREFIX + userId, JSON.stringify(loadedProgress));
   };
 
-  // Save Progress both locally and on Supabase Cloud
-  const saveProgressState = async (newProg: UserProgress, username?: string) => {
-    setProgress(newProg);
-    const targetUser = username || user?.username || 'guest';
-    safeStorage.setItem(STORAGE_KEYS.PROGRESS_PREFIX + targetUser, JSON.stringify(newProg));
-
-    if (targetUser !== 'guest') {
-      try {
-        const currentUserData = user || JSON.parse(safeStorage.getItem(STORAGE_KEYS.CURRENT_USER) || '{}');
-        const { error } = await supabase
-          .from('user_progress')
-          .upsert(
-            {
-              username: targetUser,
-              name: currentUserData.name || targetUser,
-              email: currentUserData.email || '',
-              age: currentUserData.age || 0,
-              score: newProg.score,
-              completed_lessons: newProg.completedLessons,
-            },
-            { onConflict: 'username' }
-          );
-        if (error) {
-          console.warn('Supabase upsert error:', error.message);
-        }
-      } catch (err) {
-        console.warn('Could not sync progress with Supabase cloud', err);
-      }
+  // Upload progress to the user's own row
+  const syncToCloud = async (info: User, prog: UserProgress) => {
+    try {
+      const { error } = await supabase.from('user_progress').upsert(
+        {
+          user_id: info.id,
+          username: info.username,
+          name: info.name,
+          email: info.email,
+          age: info.age,
+          score: prog.score,
+          completed_lessons: prog.completedLessons,
+        },
+        { onConflict: 'user_id' }
+      );
+      if (error) console.warn('Supabase upsert error:', error.message);
+    } catch (err) {
+      console.warn('Could not sync progress with Supabase cloud', err);
     }
   };
 
-  // Auth Operations with Supabase Cloud Sync
-  const register = async (name: string, username: string, email: string, age: number) => {
+  // Save Progress both locally and on Supabase Cloud
+  const saveProgressState = async (newProg: UserProgress, userId?: string) => {
+    setProgress(newProg);
+    const key = userId || user?.id || 'guest';
+    safeStorage.setItem(STORAGE_KEYS.PROGRESS_PREFIX + key, JSON.stringify(newProg));
+    if (key !== 'guest' && user) {
+      await syncToCloud(user, newProg);
+    }
+  };
+
+  // Auth Operations (Supabase Auth: email + password)
+  const register = async (name: string, username: string, email: string, age: number, password?: string) => {
     const cleanUser = username.trim().toLowerCase();
     const cleanName = name.trim();
     const cleanEmail = email.trim().toLowerCase();
@@ -244,58 +256,52 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     if (isNaN(age) || age < 8 || age > 95) {
       return { success: false, error: 'يرجى إدخال عمر صحيح بين 8 و 95 عاماً.' };
     }
+    if (!password || password.length < 6) {
+      return { success: false, error: 'كلمة المرور يجب ألا تقل عن 6 أحرف.' };
+    }
 
     try {
-      // Check if user exists on Supabase Cloud
-      const { data: existingUser } = await supabase
-        .from('user_progress')
-        .select('username')
-        .eq('username', cleanUser)
-        .maybeSingle();
-
-      if (existingUser) {
-        return { success: false, error: 'اسم المستخدم مسجل مسبقاً، يرجى اختيار اسم آخر.' };
-      }
-
-      const newUser: User = {
-        name: cleanName,
-        username: cleanUser,
+      const { data, error } = await supabase.auth.signUp({
         email: cleanEmail,
-        age,
-        createdAt: Date.now(),
-        lastSeen: Date.now(),
-      };
+        password,
+        options: { data: { name: cleanName, username: cleanUser, age } },
+      });
 
-      // Save user to Supabase Cloud using upsert
-      const { error: insertError } = await supabase.from('user_progress').upsert(
-        [
-          {
-            username: cleanUser,
-            name: cleanName,
-            email: cleanEmail,
-            age,
-            score: 0,
-            completed_lessons: [],
-          },
-        ],
-        { onConflict: 'username' }
-      );
-
-      if (insertError) {
-        console.error('Supabase Insert Error:', insertError.message);
+      if (error) {
+        const msg = error.message.toLowerCase();
+        if (msg.includes('already')) {
+          return { success: false, error: 'هذا البريد مسجل مسبقاً، جرّب تسجيل الدخول.' };
+        }
+        if (msg.includes('password')) {
+          return { success: false, error: 'كلمة المرور ضعيفة، اختر كلمة أقوى.' };
+        }
+        return { success: false, error: 'تعذر إنشاء الحساب: ' + error.message };
       }
 
-      // Save locally as backup
-      const usersDb = JSON.parse(safeStorage.getItem(STORAGE_KEYS.USERS_DB) || '{}');
-      usersDb[cleanUser] = newUser;
-      safeStorage.setItem(STORAGE_KEYS.USERS_DB, JSON.stringify(usersDb));
-      safeStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(newUser));
+      if (!data.user) {
+        return { success: false, error: 'حدث خطأ أثناء إنشاء الحساب، يرجى المحاولة لاحقاً.' };
+      }
+
+      // Email confirmation is ON in Supabase: no session until the user confirms
+      if (!data.session) {
+        return {
+          success: false,
+          error: 'تم إنشاء الحساب. افتح بريدك الإلكتروني واضغط على رابط التأكيد، ثم سجّل الدخول.',
+        };
+      }
+
+      const newUser = toAppUser(data.user);
+      newUser.name = cleanName;
+      newUser.username = cleanUser;
+      newUser.age = age;
       setUser(newUser);
 
       // Migrate guest progress if exists
       const guestProgStr = safeStorage.getItem(STORAGE_KEYS.PROGRESS_PREFIX + 'guest');
-      const initialProg = guestProgStr ? JSON.parse(guestProgStr) : defaultProgress;
-      await saveProgressState(initialProg, cleanUser);
+      const initialProg: UserProgress = guestProgStr ? JSON.parse(guestProgStr) : defaultProgress;
+      setProgress(initialProg);
+      safeStorage.setItem(STORAGE_KEYS.PROGRESS_PREFIX + newUser.id, JSON.stringify(initialProg));
+      await syncToCloud(newUser, initialProg);
 
       setShowAuthModal(false);
       return { success: true };
@@ -304,65 +310,29 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
-  const login = async (username: string) => {
-    const cleanUser = username.trim().toLowerCase();
-    if (!cleanUser) {
-      return { success: false, error: 'يرجى كتابة اسم المستخدم للدخول.' };
+  const login = async (email: string, password?: string) => {
+    const cleanEmail = email.trim().toLowerCase();
+    if (!cleanEmail || !password) {
+      return { success: false, error: 'يرجى كتابة البريد الإلكتروني وكلمة المرور.' };
     }
 
     try {
-      // 1. Fetch user from Supabase Cloud
-      const { data, error } = await supabase
-        .from('user_progress')
-        .select('*')
-        .eq('username', cleanUser)
-        .maybeSingle();
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: cleanEmail,
+        password,
+      });
 
-      if (data && !error) {
-        const foundUser: User = {
-          name: data.name || cleanUser,
-          username: cleanUser,
-          email: data.email || '',
-          age: data.age || 0,
-          createdAt: Date.now(),
-          lastSeen: Date.now(),
-        };
-
-        safeStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(foundUser));
-        setUser(foundUser);
-        await loadUserProgress(cleanUser);
-        setShowAuthModal(false);
-        return { success: true };
+      if (error || !data.user) {
+        const msg = (error?.message || '').toLowerCase();
+        if (msg.includes('confirm')) {
+          return { success: false, error: 'يرجى تأكيد بريدك الإلكتروني أولاً من الرابط المرسل لك.' };
+        }
+        return { success: false, error: 'البريد الإلكتروني أو كلمة المرور غير صحيحة.' };
       }
 
-      // 2. Fallback to LocalStorage if offline or not found on cloud
-      const usersDb = JSON.parse(safeStorage.getItem(STORAGE_KEYS.USERS_DB) || '{}');
-      const found = usersDb[cleanUser];
-      if (!found) {
-        return { success: false, error: 'الحساب غير موجود، يرجى إنشاء حساب جديد أولاً.' };
-      }
-
-      // Upload local user to Supabase Cloud
-      await supabase.from('user_progress').upsert(
-        [
-          {
-            username: cleanUser,
-            name: found.name || cleanUser,
-            email: found.email || '',
-            age: found.age || 0,
-            score: progress.score || 0,
-            completed_lessons: progress.completedLessons || [],
-          },
-        ],
-        { onConflict: 'username' }
-      );
-
-      found.lastSeen = Date.now();
-      usersDb[cleanUser] = found;
-      safeStorage.setItem(STORAGE_KEYS.USERS_DB, JSON.stringify(usersDb));
-      safeStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(found));
-      setUser(found);
-      await loadUserProgress(cleanUser);
+      const appUser = toAppUser(data.user);
+      setUser(appUser);
+      await loadUserProgress(appUser.id!);
       setShowAuthModal(false);
       return { success: true };
     } catch (e) {
@@ -371,7 +341,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const logout = () => {
-    safeStorage.removeItem(STORAGE_KEYS.CURRENT_USER);
+    supabase.auth.signOut();
     setUser(null);
     setProgress(defaultProgress);
     setActiveView({ type: 'home' });
@@ -380,14 +350,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const deleteAccount = async () => {
     if (!user) return;
     try {
-      // Delete from Supabase Cloud
-      await supabase.from('user_progress').delete().eq('username', user.username);
-
-      // Delete locally
-      const usersDb = JSON.parse(safeStorage.getItem(STORAGE_KEYS.USERS_DB) || '{}');
-      delete usersDb[user.username];
-      safeStorage.setItem(STORAGE_KEYS.USERS_DB, JSON.stringify(usersDb));
-      safeStorage.removeItem(STORAGE_KEYS.PROGRESS_PREFIX + user.username);
+      // Deletes the user's own progress row (allowed by RLS)
+      await supabase.from('user_progress').delete().eq('user_id', user.id);
+      safeStorage.removeItem(STORAGE_KEYS.PROGRESS_PREFIX + user.id);
       logout();
     } catch (e) {
       console.error('Error deleting account', e);
@@ -487,7 +452,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       };
 
       setProgress(cleanProgress);
-      saveProgressState(cleanProgress, user?.username || 'guest');
+      saveProgressState(cleanProgress, user?.id || 'guest');
       return { success: true };
     } catch (e) {
       return { success: false, error: 'تعذر استيراد الملف (تأكد من أنه ملف JSON صالح).' };
