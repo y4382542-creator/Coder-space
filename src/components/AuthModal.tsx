@@ -7,31 +7,38 @@ export const AuthModal: React.FC = () => {
   const [tab, setTab] = useState<'login' | 'register'>('login');
 
   // Login fields
-  const [loginUsername, setLoginUsername] = useState('');
+  const [loginEmail, setLoginEmail] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [loading, setLoading] = useState(false);
 
   // Register fields
   const [regName, setRegName] = useState('');
   const [regUsername, setRegUsername] = useState('');
   const [regEmail, setRegEmail] = useState('');
+  const [regPassword, setRegPassword] = useState('');
   const [regAge, setRegAge] = useState<number | ''>('');
   const [errorMessage, setErrorMessage] = useState('');
 
   if (!showAuthModal) return null;
 
-  const handleLoginSubmit = (e: React.FormEvent) => {
+  const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage('');
-    const res = login(loginUsername);
+    setLoading(true);
+    const res = await login(loginEmail, loginPassword);
+    setLoading(false);
     if (!res.success) {
       setErrorMessage(res.error || 'تعذر تسجيل الدخول.');
     }
   };
 
-  const handleRegisterSubmit = (e: React.FormEvent) => {
+  const handleRegisterSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage('');
+    setLoading(true);
     const numAge = Number(regAge);
-    const res = register(regName, regUsername, regEmail, numAge);
+    const res = await register(regName, regUsername, regEmail, numAge, regPassword);
+    setLoading(false);
     if (!res.success) {
       setErrorMessage(res.error || 'تعذر إتمام التسجيل.');
     }
@@ -60,7 +67,7 @@ export const AuthModal: React.FC = () => {
             كودر سبيس <span className="text-[#43E97B]">Coder Space</span>
           </div>
           <p className="text-xs text-[#A7A5C0] mt-1">
-            تسجيل الدخول لحفظ تقدمك ونقاطك وشهاداتك المعتمدة محلياً
+            سجّل دخولك لحفظ تقدمك ونقاطك وشهاداتك في حسابك
           </p>
         </div>
 
@@ -101,21 +108,38 @@ export const AuthModal: React.FC = () => {
           <form onSubmit={handleLoginSubmit} className="space-y-4">
             <div>
               <label className="block text-xs font-bold text-[#A7A5C0] mb-1.5">
-                اسم المستخدم (Username)
+                البريد الإلكتروني
               </label>
               <input
-                type="text"
-                value={loginUsername}
-                onChange={(e) => setLoginUsername(e.target.value)}
-                placeholder="اكتب اسم المستخدم الخاص بك"
-                className="w-full bg-[#141221] border border-white/10 focus:border-[#6C63FF] rounded-xl px-4 py-2.5 text-sm text-white placeholder-gray-500 focus:outline-none transition-colors"
+                type="email"
+                value={loginEmail}
+                onChange={(e) => setLoginEmail(e.target.value)}
+                placeholder="example@gmail.com"
+                dir="ltr"
+                className="w-full bg-[#141221] border border-white/10 focus:border-[#6C63FF] rounded-xl px-4 py-2.5 text-sm text-white placeholder-gray-500 focus:outline-none transition-colors text-right"
+                required
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-[#A7A5C0] mb-1.5">
+                كلمة المرور
+              </label>
+              <input
+                type="password"
+                value={loginPassword}
+                onChange={(e) => setLoginPassword(e.target.value)}
+                placeholder="••••••"
+                dir="ltr"
+                className="w-full bg-[#141221] border border-white/10 focus:border-[#6C63FF] rounded-xl px-4 py-2.5 text-sm text-white placeholder-gray-500 focus:outline-none transition-colors text-right"
                 required
               />
             </div>
 
             <button
               type="submit"
-              className="w-full py-3 rounded-xl bg-gradient-to-r from-[#6C63FF] to-[#4B44CC] hover:brightness-110 text-white font-bold text-sm shadow-lg shadow-[#6C63FF]/30 active:scale-95 transition-all flex items-center justify-center gap-2"
+              disabled={loading}
+              className="w-full disabled:opacity-60 py-3 rounded-xl bg-gradient-to-r from-[#6C63FF] to-[#4B44CC] hover:brightness-110 text-white font-bold text-sm shadow-lg shadow-[#6C63FF]/30 active:scale-95 transition-all flex items-center justify-center gap-2"
             >
               <LogIn className="w-4 h-4" />
               <span>دخول إلى حسابي</span>
@@ -169,6 +193,22 @@ export const AuthModal: React.FC = () => {
             </div>
 
             <div>
+              <label className="block text-xs font-bold text-[#A7A5C0] mb-1">
+                كلمة المرور (6 أحرف على الأقل)
+              </label>
+              <input
+                type="password"
+                value={regPassword}
+                onChange={(e) => setRegPassword(e.target.value)}
+                placeholder="••••••"
+                dir="ltr"
+                className="w-full bg-[#141221] border border-white/10 focus:border-[#6C63FF] rounded-xl px-3.5 py-2 text-sm text-white placeholder-gray-500 focus:outline-none transition-colors text-right"
+                required
+                minLength={6}
+              />
+            </div>
+
+            <div>
               <div className="flex items-center justify-between mb-1">
                 <label className="text-xs font-bold text-[#A7A5C0]">
                   العمر (بالسنوات)
@@ -193,7 +233,8 @@ export const AuthModal: React.FC = () => {
 
             <button
               type="submit"
-              className="w-full py-3 rounded-xl bg-gradient-to-r from-[#43E97B] to-[#28C874] hover:brightness-110 text-[#0A2010] font-black text-sm shadow-lg shadow-[#43E97B]/20 active:scale-95 transition-all flex items-center justify-center gap-2 mt-2"
+              disabled={loading}
+              className="w-full disabled:opacity-60 py-3 rounded-xl bg-gradient-to-r from-[#43E97B] to-[#28C874] hover:brightness-110 text-[#0A2010] font-black text-sm shadow-lg shadow-[#43E97B]/20 active:scale-95 transition-all flex items-center justify-center gap-2 mt-2"
             >
               <UserPlus className="w-4 h-4 fill-current" />
               <span>إنشاء الحساب ومتابعة التعلم</span>
@@ -208,7 +249,7 @@ export const AuthModal: React.FC = () => {
             className="text-[11px] text-[#A7A5C0] hover:text-white flex items-center justify-center gap-1.5 mx-auto transition-colors"
           >
             <ShieldCheck className="w-3.5 h-3.5 text-[#43E97B]" />
-            <span>بياناتك محفوظة محلياً 100% (خصوصية تامة)</span>
+            <span>بياناتك محمية بحساب خاص بك (اعرف أكثر)</span>
           </button>
         </div>
       </div>
