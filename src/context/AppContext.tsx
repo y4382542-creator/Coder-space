@@ -158,7 +158,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         .from('user_progress')
         .select('*')
         .eq('username', username)
-        .single();
+        .maybeSingle();
 
       if (data && !error) {
         loadedProgress = {
@@ -203,14 +203,23 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     if (targetUser !== 'guest') {
       try {
-        await supabase
+        const currentUserData = user || JSON.parse(safeStorage.getItem(STORAGE_KEYS.CURRENT_USER) || '{}');
+        const { error } = await supabase
           .from('user_progress')
-          .update({
-            score: newProg.score,
-            completed_lessons: newProg.completedLessons,
-            updated_at: new Date().toISOString(),
-          })
-          .eq('username', targetUser);
+          .upsert(
+            {
+              username: targetUser,
+              name: currentUserData.name || targetUser,
+              email: currentUserData.email || '',
+              age: currentUserData.age || 0,
+              score: newProg.score,
+              completed_lessons: newProg.completedLessons,
+            },
+            { onConflict: 'username' }
+          );
+        if (error) {
+          console.warn('Supabase upsert error:', error.message);
+        }
       } catch (err) {
         console.warn('Could not sync progress with Supabase cloud', err);
       }
@@ -242,7 +251,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         .from('user_progress')
         .select('username')
         .eq('username', cleanUser)
-        .single();
+        .maybeSingle();
 
       if (existingUser) {
         return { success: false, error: 'اسم المستخدم مسجل مسبقاً، يرجى اختيار اسم آخر.' };
@@ -257,17 +266,24 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         lastSeen: Date.now(),
       };
 
-      // Save user to Supabase Cloud
-      await supabase.from('user_progress').insert([
-        {
-          username: cleanUser,
-          name: cleanName,
-          email: cleanEmail,
-          age,
-          score: 0,
-          completed_lessons: [],
-        },
-      ]);
+      // Save user to Supabase Cloud using upsert
+      const { error: insertError } = await supabase.from('user_progress').upsert(
+        [
+          {
+            username: cleanUser,
+            name: cleanName,
+            email: cleanEmail,
+            age,
+            score: 0,
+            completed_lessons: [],
+          },
+        ],
+        { onConflict: 'username' }
+      );
+
+      if (insertError) {
+        console.error('Supabase Insert Error:', insertError.message);
+      }
 
       // Save locally as backup
       const usersDb = JSON.parse(safeStorage.getItem(STORAGE_KEYS.USERS_DB) || '{}');
@@ -300,7 +316,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         .from('user_progress')
         .select('*')
         .eq('username', cleanUser)
-        .single();
+        .maybeSingle();
 
       if (data && !error) {
         const foundUser: User = {
@@ -325,6 +341,21 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       if (!found) {
         return { success: false, error: 'الحساب غير موجود، يرجى إنشاء حساب جديد أولاً.' };
       }
+
+      // Upload local user to Supabase Cloud
+      await supabase.from('user_progress').upsert(
+        [
+          {
+            username: cleanUser,
+            name: found.name || cleanUser,
+            email: found.email || '',
+            age: found.age || 0,
+            score: progress.score || 0,
+            completed_lessons: progress.completedLessons || [],
+          },
+        ],
+        { onConflict: 'username' }
+      );
 
       found.lastSeen = Date.now();
       usersDb[cleanUser] = found;
