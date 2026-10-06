@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { User, UserProgress, AccessibilitySettings, ActiveView } from '../types';
+import { supabase } from '../supabase';
 
 interface AppContextType {
   user: User | null;
@@ -9,10 +10,10 @@ interface AppContextType {
   accessibility: AccessibilitySettings;
   updateAccessibility: (settings: Partial<AccessibilitySettings>) => void;
   resetAccessibility: () => void;
-  register: (name: string, username: string, email: string, age: number, password?: string) => { success: boolean; error?: string };
-  login: (username: string, password?: string) => { success: boolean; error?: string };
+  register: (name: string, username: string, email: string, age: number, password?: string) => Promise<{ success: boolean; error?: string }>;
+  login: (username: string, password?: string) => Promise<{ success: boolean; error?: string }>;
   logout: () => void;
-  deleteAccount: () => void;
+  deleteAccount: () => Promise<void>;
   completeLesson: (lessonId: string) => void;
   addScore: (points: number) => void;
   recordExamResult: (examKey: string, scorePercent: number, totalQuestions: number, correctAnswers: number) => void;
@@ -99,7 +100,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [ttsSpeaking, setTtsSpeaking] = useState<boolean>(false);
   const [ttsSpeed, setTtsSpeed] = useState<number>(1);
 
-  // Load saved session on mount
+  // Load saved session on mount & Sync with Supabase
   useEffect(() => {
     try {
       const savedUserStr = safeStorage.getItem(STORAGE_KEYS.CURRENT_USER);
@@ -108,7 +109,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         setUser(savedUser);
         loadUserProgress(savedUser.username);
       } else {
-        // Guest mode default progress
         const guestProgress = safeStorage.getItem(STORAGE_KEYS.PROGRESS_PREFIX + 'guest');
         if (guestProgress) {
           setProgress(JSON.parse(guestProgress));
@@ -149,43 +149,76 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     safeStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(accessibility));
   }, [accessibility]);
 
-  const loadUserProgress = (username: string) => {
-    const raw = safeStorage.getItem(STORAGE_KEYS.PROGRESS_PREFIX + username);
-    if (raw) {
-      try {
-        const loaded: UserProgress = JSON.parse(raw);
-        // Check daily streak safely
-        const today = new Date().toISOString().split('T')[0];
-        if (loaded.lastActiveDate && loaded.lastActiveDate !== today) {
-          const lastDate = new Date(loaded.lastActiveDate);
-          const diffDays = Math.round((new Date(today).getTime() - lastDate.getTime()) / (1000 * 3600 * 24));
-          if (diffDays === 1) {
-            loaded.streakDays = (loaded.streakDays || 1) + 1;
-          } else if (diffDays > 1) {
-            loaded.streakDays = 1;
-          }
-          loaded.lastActiveDate = today;
-        } else if (!loaded.lastActiveDate) {
-          loaded.lastActiveDate = today;
-          loaded.streakDays = 1;
-        }
-        setProgress(loaded);
-        return;
-      } catch (err) {
-        console.error('Error parsing user progress', err);
+  // Load user progress from Supabase with LocalStorage Fallback
+  const loadUserProgress = async (username: string) => {
+    let loadedProgress: UserProgress = defaultProgress;
+
+    try {
+      const { data, error } = await supabase
+        .from('user_progress')
+        .select('*')
+        .eq('username', username)
+        .single();
+
+      if (data && !error) {
+        loadedProgress = {
+          score: data.score || 0,
+          completedLessons: data.completed_lessons || [],
+          passedExams: {},
+          completedProjects: [],
+          streakDays: 1,
+          lastActiveDate: new Date().toISOString().split('T')[0],
+        };
+      } else {
+        const raw = safeStorage.getItem(STORAGE_KEYS.PROGRESS_PREFIX + username);
+        if (raw) loadedProgress = JSON.parse(raw);
       }
+    } catch (err) {
+      const raw = safeStorage.getItem(STORAGE_KEYS.PROGRESS_PREFIX + username);
+      if (raw) loadedProgress = JSON.parse(raw);
     }
-    setProgress(defaultProgress);
+
+    // Daily Streak Logic
+    const today = new Date().toISOString().split('T')[0];
+    if (loadedProgress.lastActiveDate && loadedProgress.lastActiveDate !== today) {
+      const lastDate = new Date(loadedProgress.lastActiveDate);
+      const diffDays = Math.round((new Date(today).getTime() - lastDate.getTime()) / (1000 * 3600 * 24));
+      if (diffDays === 1) {
+        loadedProgress.streakDays = (loadedProgress.streakDays || 1) + 1;
+      } else if (diffDays > 1) {
+        loadedProgress.streakDays = 1;
+      }
+      loadedProgress.lastActiveDate = today;
+    }
+
+    setProgress(loadedProgress);
+    safeStorage.setItem(STORAGE_KEYS.PROGRESS_PREFIX + username, JSON.stringify(loadedProgress));
   };
 
-  const saveProgressState = (newProg: UserProgress, username?: string) => {
+  // Save Progress both locally and on Supabase Cloud
+  const saveProgressState = async (newProg: UserProgress, username?: string) => {
     setProgress(newProg);
     const targetUser = username || user?.username || 'guest';
     safeStorage.setItem(STORAGE_KEYS.PROGRESS_PREFIX + targetUser, JSON.stringify(newProg));
+
+    if (targetUser !== 'guest') {
+      try {
+        await supabase
+          .from('user_progress')
+          .update({
+            score: newProg.score,
+            completed_lessons: newProg.completedLessons,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('username', targetUser);
+      } catch (err) {
+        console.warn('Could not sync progress with Supabase cloud', err);
+      }
+    }
   };
 
-  // Auth Operations
-  const register = (name: string, username: string, email: string, age: number) => {
+  // Auth Operations with Supabase Cloud Sync
+  const register = async (name: string, username: string, email: string, age: number) => {
     const cleanUser = username.trim().toLowerCase();
     const cleanName = name.trim();
     const cleanEmail = email.trim().toLowerCase();
@@ -204,8 +237,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
 
     try {
-      const usersDb = JSON.parse(safeStorage.getItem(STORAGE_KEYS.USERS_DB) || '{}');
-      if (usersDb[cleanUser]) {
+      // Check if user exists on Supabase Cloud
+      const { data: existingUser } = await supabase
+        .from('user_progress')
+        .select('username')
+        .eq('username', cleanUser)
+        .single();
+
+      if (existingUser) {
         return { success: false, error: 'اسم المستخدم مسجل مسبقاً، يرجى اختيار اسم آخر.' };
       }
 
@@ -218,6 +257,20 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         lastSeen: Date.now(),
       };
 
+      // Save user to Supabase Cloud
+      await supabase.from('user_progress').insert([
+        {
+          username: cleanUser,
+          name: cleanName,
+          email: cleanEmail,
+          age,
+          score: 0,
+          completed_lessons: [],
+        },
+      ]);
+
+      // Save locally as backup
+      const usersDb = JSON.parse(safeStorage.getItem(STORAGE_KEYS.USERS_DB) || '{}');
       usersDb[cleanUser] = newUser;
       safeStorage.setItem(STORAGE_KEYS.USERS_DB, JSON.stringify(usersDb));
       safeStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(newUser));
@@ -226,22 +279,47 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       // Migrate guest progress if exists
       const guestProgStr = safeStorage.getItem(STORAGE_KEYS.PROGRESS_PREFIX + 'guest');
       const initialProg = guestProgStr ? JSON.parse(guestProgStr) : defaultProgress;
-      saveProgressState(initialProg, cleanUser);
+      await saveProgressState(initialProg, cleanUser);
 
       setShowAuthModal(false);
       return { success: true };
     } catch (e) {
-      return { success: false, error: 'حدث خطأ أثناء حفظ الحساب محلياً.' };
+      return { success: false, error: 'حدث خطأ أثناء إنشاء الحساب، يرجى المحاولة لاحقاً.' };
     }
   };
 
-  const login = (username: string) => {
+  const login = async (username: string) => {
     const cleanUser = username.trim().toLowerCase();
     if (!cleanUser) {
       return { success: false, error: 'يرجى كتابة اسم المستخدم للدخول.' };
     }
 
     try {
+      // 1. Fetch user from Supabase Cloud
+      const { data, error } = await supabase
+        .from('user_progress')
+        .select('*')
+        .eq('username', cleanUser)
+        .single();
+
+      if (data && !error) {
+        const foundUser: User = {
+          name: data.name || cleanUser,
+          username: cleanUser,
+          email: data.email || '',
+          age: data.age || 0,
+          createdAt: Date.now(),
+          lastSeen: Date.now(),
+        };
+
+        safeStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(foundUser));
+        setUser(foundUser);
+        await loadUserProgress(cleanUser);
+        setShowAuthModal(false);
+        return { success: true };
+      }
+
+      // 2. Fallback to LocalStorage if offline or not found on cloud
       const usersDb = JSON.parse(safeStorage.getItem(STORAGE_KEYS.USERS_DB) || '{}');
       const found = usersDb[cleanUser];
       if (!found) {
@@ -253,7 +331,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       safeStorage.setItem(STORAGE_KEYS.USERS_DB, JSON.stringify(usersDb));
       safeStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(found));
       setUser(found);
-      loadUserProgress(cleanUser);
+      await loadUserProgress(cleanUser);
       setShowAuthModal(false);
       return { success: true };
     } catch (e) {
@@ -268,9 +346,13 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setActiveView({ type: 'home' });
   };
 
-  const deleteAccount = () => {
+  const deleteAccount = async () => {
     if (!user) return;
     try {
+      // Delete from Supabase Cloud
+      await supabase.from('user_progress').delete().eq('username', user.username);
+
+      // Delete locally
       const usersDb = JSON.parse(safeStorage.getItem(STORAGE_KEYS.USERS_DB) || '{}');
       delete usersDb[user.username];
       safeStorage.setItem(STORAGE_KEYS.USERS_DB, JSON.stringify(usersDb));
@@ -300,17 +382,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     saveProgressState(updated);
   };
 
-  // Anti-Farming & Fair Exam Scoring
   const recordExamResult = (examKey: string, scorePercent: number, totalQuestions: number, correctAnswers: number) => {
     const safePercent = Math.min(100, Math.max(0, Math.round(scorePercent)));
     const prevRecord = progress.passedExams[examKey];
 
-    // Only award points if it's the first time passing, or if the score improved!
     let pointsToAdd = 0;
     if (!prevRecord) {
       pointsToAdd = safePercent >= 60 ? 50 : 10;
     } else if (safePercent > prevRecord.scorePercent) {
-      // Award difference in performance
       pointsToAdd = Math.round(((safePercent - prevRecord.scorePercent) / 100) * 50);
     }
 
@@ -340,7 +419,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     saveProgressState(updated);
   };
 
-  // Backup & Restore with Strict Schema Sanitization
+  // Backup & Restore
   const exportBackupData = () => {
     const backupObj = {
       version: '2.0',
@@ -367,7 +446,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         return { success: false, error: 'الملف لا يحوي بيانات تقدم متوافقة.' };
       }
 
-      // Sanitize fields
       const cleanProgress: UserProgress = {
         score: typeof data.progress.score === 'number' && !isNaN(data.progress.score) ? Math.max(0, data.progress.score) : 0,
         completedLessons: Array.isArray(data.progress.completedLessons) ? data.progress.completedLessons.filter((l: any) => typeof l === 'string') : [],
@@ -378,11 +456,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       };
 
       setProgress(cleanProgress);
-      if (user) {
-        saveProgressState(cleanProgress, user.username);
-      } else {
-        saveProgressState(cleanProgress, 'guest');
-      }
+      saveProgressState(cleanProgress, user?.username || 'guest');
       return { success: true };
     } catch (e) {
       return { success: false, error: 'تعذر استيراد الملف (تأكد من أنه ملف JSON صالح).' };
@@ -397,7 +471,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setAccessibility(defaultAccessibility);
   };
 
-  // Text-To-Speech (Web Speech API)
+  // Text-To-Speech
   const playTTS = (text: string) => {
     if (!('speechSynthesis' in window)) {
       alert('المتصفح لا يدعم ميزة النطق الصوتي (Text-to-Speech).');
